@@ -1,0 +1,3 @@
+/home/teriyaki/Música/Transformer_FASHION_MNIST/TRANFOVERSINOPENCV/CMakeFiles/FashionMNISTTransformer.dir
+/home/teriyaki/Música/Transformer_FASHION_MNIST/TRANFOVERSINOPENCV/CMakeFiles/edit_cache.dir
+/home/teriyaki/Música/Transformer_FASHION_MNIST/TRANFOVERSINOPENCV/CMakeFiles/rebuild_cache.dir

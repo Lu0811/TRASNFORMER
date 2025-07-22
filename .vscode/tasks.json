@@ -1,0 +1,10 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "Compilar y ejecutar matrix_test.cpp",
+			"command": "g++ -std=c++17 -DUSE_CUDA -Iinclude -o matrix_test matrix_test.cpp src/matrix.cpp -lcudart && ./matrix_test"
+		}
+	]
+}
