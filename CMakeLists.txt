@@ -37,19 +37,44 @@ set(SOURCES
     main.cpp
     src/matrix.cpp
     src/mnist_loader.cpp
-    src/transformer.cpp
+    src/transformer_fixed.cpp
 )
 
 # ==============================
-# 🚀 SOPORTE CUDA
+# 🚀 SOPORTE CUDA MEJORADO
 # ==============================
 if(USE_CUDA)
     enable_language(CUDA)
-    set(CMAKE_CUDA_ARCHITECTURES 61)  # Para GPU MX250 (Compute Capability 6.1)
+    
+    # Detectar automáticamente la arquitectura CUDA
+    set(CMAKE_CUDA_ARCHITECTURES "60;61;70;75;80;86")
+    
+    # Configuraciones específicas para CUDA
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    
+    # Flags de compilación CUDA
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math")
+    
+    if(WIN32)
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler /W3")
+    else()
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -Wall")
+    endif()
+    
+    # Agregar archivos CUDA
     list(APPEND SOURCES src/matrix_cuda.cu)
     list(APPEND SOURCES include/cuda_ops.cu)
-    add_definitions(-DUSE_CUDA)  # ✅ define la macro en todos los .cpp
-    message(STATUS "✅ CUDA habilitado")
+    
+    # Buscar CUDA Runtime y CUBLAS
+    find_package(CUDAToolkit REQUIRED)
+    
+    add_definitions(-DUSE_CUDA)
+    
+    message(STATUS "CUDA habilitado con arquitecturas: ${CMAKE_CUDA_ARCHITECTURES}")
+    message(STATUS "CUDA Toolkit encontrado: ${CUDAToolkit_VERSION}")
+else()
+    message(STATUS "CUDA deshabilitado")
 endif()
 
 # ==============================
@@ -59,7 +84,17 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 
 # 🔗 LINK A CUDA RUNTIME SI SE USA CUDA
 if(USE_CUDA)
-    target_link_libraries(${PROJECT_NAME} cudart)
+    target_link_libraries(${PROJECT_NAME} 
+        CUDA::cudart 
+        CUDA::cublas
+    )
+    
+    # Para Windows, también agregar CUDA libs
+    if(WIN32)
+        target_link_libraries(${PROJECT_NAME} 
+            ${CUDA_LIBRARIES}
+        )
+    endif()
 endif()
 
 # ==============================

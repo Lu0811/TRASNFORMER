@@ -5,9 +5,9 @@
 #include <cmath>
 #include <chrono>
 
-//#ifndef M_PI
-//#define M_PI 3.14159265358979323846
-//#endif
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #ifdef USE_CUDA
 extern "C" void cuda_matmul(const float* A, const float* B, float* C, int M, int N, int K);
 #include "../include/cuda_ops.h"
@@ -119,6 +119,42 @@ Matrix Matrix::cudaRelu() const {
         for (int j = 0; j < cols; ++j)
             A[i * cols + j] = static_cast<float>(data[i][j]);
     cuda_matrix_relu(A.data(), B.data(), rows * cols);
+    for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < cols; ++j)
+            result.data[i][j] = static_cast<double>(B[i * cols + j]);
+    return result;
+#else
+    throw std::runtime_error("CUDA no está habilitado. Compila con -DUSE_CUDA");
+#endif
+}
+
+// GELU en GPU - CRÍTICO para Transformers
+Matrix Matrix::cudaGelu() const {
+#ifdef USE_CUDA
+    Matrix result(rows, cols);
+    std::vector<float> A(rows * cols), B(rows * cols);
+    for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < cols; ++j)
+            A[i * cols + j] = static_cast<float>(data[i][j]);
+    cuda_matrix_gelu(A.data(), B.data(), rows * cols);
+    for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < cols; ++j)
+            result.data[i][j] = static_cast<double>(B[i * cols + j]);
+    return result;
+#else
+    throw std::runtime_error("CUDA no está habilitado. Compila con -DUSE_CUDA");
+#endif
+}
+
+// Dropout en GPU - CRÍTICO IMPLEMENTADO para regularización >85% accuracy
+Matrix Matrix::cudaDropout(double dropout_rate, unsigned int seed) const {
+#ifdef USE_CUDA
+    Matrix result(rows, cols);
+    std::vector<float> A(rows * cols), B(rows * cols);
+    for (int i = 0; i < rows; ++i)
+        for (int j = 0; j < cols; ++j)
+            A[i * cols + j] = static_cast<float>(data[i][j]);
+    cuda_matrix_dropout(A.data(), B.data(), rows * cols, static_cast<float>(dropout_rate), seed);
     for (int i = 0; i < rows; ++i)
         for (int j = 0; j < cols; ++j)
             result.data[i][j] = static_cast<double>(B[i * cols + j]);

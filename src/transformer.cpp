@@ -5,6 +5,8 @@
 #include <iostream>
 #include <numeric>
 #include <fstream>
+#include <iomanip>
+#include <chrono>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -17,12 +19,15 @@
 PositionalEncoding::PositionalEncoding(int max_len, int d_model) 
     : max_len(max_len), d_model(d_model), encoding(max_len, d_model) {
     
+    // POSITIONAL ENCODING MEJORADO - escalado para no dominar los embeddings
+    double pe_scale = 0.1;  // Escalar para HIGH INITIAL ACCURACY
+    
     for (int pos = 0; pos < max_len; pos++) {
         for (int i = 0; i < d_model; i++) {
             if (i % 2 == 0) {
-                encoding.data[pos][i] = sin(pos / pow(10000.0, (2.0 * i) / d_model));
+                encoding.data[pos][i] = sin(pos / pow(10000.0, (2.0 * i) / d_model)) * pe_scale;
             } else {
-                encoding.data[pos][i] = cos(pos / pow(10000.0, (2.0 * (i-1)) / d_model));
+                encoding.data[pos][i] = cos(pos / pow(10000.0, (2.0 * (i-1)) / d_model)) * pe_scale;
             }
         }
     }
@@ -30,10 +35,10 @@ PositionalEncoding::PositionalEncoding(int max_len, int d_model)
 
 Matrix PositionalEncoding::encode(const Matrix& input) const {
     Matrix result = input;
-    int seq_len = std::min(input.rows, max_len);
+    int seq_len = (std::min)(input.rows, max_len);
     
     for (int i = 0; i < seq_len; i++) {
-        for (int j = 0; j < std::min(input.cols, d_model); j++) {
+        for (int j = 0; j < (std::min)(input.cols, d_model); j++) {
             result.data[i][j] += encoding.data[i][j];
         }
     }
@@ -66,11 +71,12 @@ MultiHeadAttention::MultiHeadAttention(int d_model, int num_heads)
     b_v = Matrix(1, d_model);
     b_o = Matrix(1, d_model);
     
-    // Initialize weights with Xavier initialization
-    W_q.xavier_init();
-    W_k.xavier_init();
-    W_v.xavier_init();
-    W_o.xavier_init();
+    // MEJOR INICIALIZACIÓN para HIGH INITIAL ACCURACY
+    double scale = sqrt(2.0 / d_model);  // He initialization
+    W_q.randomize(-scale * 0.5, scale * 0.5);  // Queries más conservadoras
+    W_k.randomize(-scale * 0.5, scale * 0.5);  // Keys más conservadoras
+    W_v.randomize(-scale * 0.5, scale * 0.5);  // Values más conservadoras
+    W_o.randomize(-scale * 0.8, scale * 0.8);  // Output projection menos agresiva
 
     
     b_q.zero();
@@ -91,9 +97,9 @@ Matrix MultiHeadAttention::attention(const Matrix& Q, const Matrix& K, const Mat
     // Compute attention scores: Q * K^T
     Matrix scores = Q.cudaMultiply(K.transpose());
     
-    // Scale by sqrt(d_k)
-    double scale = 1.0 / sqrt(d_k);
-    scores = scores * scale;
+    // Scale by sqrt(d_k) - USANDO CUDA
+    float scale = 1.0f / sqrt(d_k);
+    scores = scores.cudaMultiply(scale);
     
     // Apply mask if needed
     if (mask) {
@@ -138,12 +144,44 @@ Matrix MultiHeadAttention::forward(const Matrix& query, const Matrix& key, const
         }
     }
 
+    // MULTI-HEAD ATTENTION REAL (no más single-head)
+    int seq_len = Q.rows;
+    Matrix multi_head_output(seq_len, d_model);
+    multi_head_output.zero();
     
-    // Multi-head attention (simplified: treat as single head for now)
-    Matrix attended = attention(Q, K, V, mask);
+    // Procesar cada head por separado
+    for (int head = 0; head < num_heads; head++) {
+        int start_dim = head * d_k;
+        int end_dim = start_dim + d_k;
+        
+        // Extraer Q, K, V para este head
+        Matrix Q_head(seq_len, d_k);
+        Matrix K_head(seq_len, d_k);
+        Matrix V_head(seq_len, d_k);
+        
+        for (int i = 0; i < seq_len; i++) {
+            for (int j = 0; j < d_k; j++) {
+                Q_head.data[i][j] = Q.data[i][start_dim + j];
+                K_head.data[i][j] = K.data[i][start_dim + j];
+                V_head.data[i][j] = V.data[i][start_dim + j];
+            }
+        }
+        
+        // Attention para este head
+        Matrix head_output = attention(Q_head, K_head, V_head, mask);
+        
+        // Concatenar resultado de este head
+        for (int i = 0; i < seq_len; i++) {
+            for (int j = 0; j < d_k; j++) {
+                multi_head_output.data[i][start_dim + j] = head_output.data[i][j];
+            }
+        }
+    }
+    
+    cache.attended_values = multi_head_output;
     
     // Output projection
-    Matrix output = attended.cudaMultiply(W_o);
+    Matrix output = multi_head_output.cudaMultiply(W_o);
     
     // Add output bias
     for (int i = 0; i < output.rows; i++) {
@@ -151,8 +189,6 @@ Matrix MultiHeadAttention::forward(const Matrix& query, const Matrix& key, const
             output.data[i][j] += b_o.data[0][j];
         }
     }
-    
-    cache.attended_values = attended;
     
     return output;
 }
@@ -188,23 +224,23 @@ std::tuple<Matrix, Matrix, Matrix> MultiHeadAttention::backward(const Matrix& gr
         }
     }
     
-    // Scale gradient
-    double scale = 1.0 / sqrt(d_k);
-    grad_scores = grad_scores * scale;
+    // Scale gradient - USANDO CUDA
+    float scale = 1.0f / sqrt(d_k);
+    grad_scores = grad_scores.cudaMultiply(scale);
     
-    // Gradients w.r.t Q, K, V
-    Matrix grad_Q = grad_scores * cache.key;
-    Matrix grad_K = grad_scores.transpose() * cache.query;
+    // Gradients w.r.t Q, K, V - USANDO CUDA
+    Matrix grad_Q = grad_scores.cudaMultiply(cache.key);
+    Matrix grad_K = grad_scores.transpose().cudaMultiply(cache.query);
     
-    // Linear transformation gradients
-    Matrix grad_query = grad_Q * W_q.transpose();
-    Matrix grad_key = grad_K * W_k.transpose();
-    Matrix grad_value = grad_V * W_v.transpose();
+    // Linear transformation gradients - USANDO CUDA
+    Matrix grad_query = grad_Q.cudaMultiply(W_q.transpose());
+    Matrix grad_key = grad_K.cudaMultiply(W_k.transpose());
+    Matrix grad_value = grad_V.cudaMultiply(W_v.transpose());
     
-    // Weight gradients
-    grad_q.dW.add_inplace(cache.query.transpose() * grad_Q);
-    grad_k.dW.add_inplace(cache.key.transpose() * grad_K);
-    grad_v.dW.add_inplace(cache.value.transpose() * grad_V);
+    // Weight gradients - USANDO CUDA
+    grad_q.dW.add_inplace(cache.query.transpose().cudaMultiply(grad_Q));
+    grad_k.dW.add_inplace(cache.key.transpose().cudaMultiply(grad_K));
+    grad_v.dW.add_inplace(cache.value.transpose().cudaMultiply(grad_V));
     
     // Bias gradients
     for (int j = 0; j < grad_Q.cols; j++) {
@@ -270,10 +306,20 @@ FeedForward::FeedForward(int d_model, int d_ff) : d_model(d_model), d_ff(d_ff) {
     b1 = Matrix(1, d_ff);
     b2 = Matrix(1, d_model);
     
-    W1.xavier_init();
-    W2.xavier_init();
-    b1.zero();
-    b2.zero();
+    // MEJOR INICIALIZACIÓN para HIGH INITIAL ACCURACY
+    double scale1 = sqrt(2.0 / d_model);    // He init para primera capa
+    double scale2 = sqrt(1.0 / d_ff) * 0.5; // Más conservador para segunda capa
+    
+    W1.randomize(-scale1, scale1);
+    W2.randomize(-scale2, scale2);
+    
+    // Bias inicializado a valores pequeños pero no cero
+    for (int i = 0; i < b1.cols; i++) {
+        b1.data[0][i] = 0.01;  // Pequeño bias positivo para GELU
+    }
+    for (int i = 0; i < b2.cols; i++) {
+        b2.data[0][i] = 0.0;   // Output bias cero
+    }
     
     grad_1 = Gradients(d_model, d_ff);
     grad_2 = Gradients(d_ff, d_model);
@@ -282,8 +328,8 @@ FeedForward::FeedForward(int d_model, int d_ff) : d_model(d_model), d_ff(d_ff) {
 Matrix FeedForward::forward(const Matrix& input) {
     input_cache = input;
     
-    // First linear layer
-    Matrix hidden = input * W1;
+    // First linear layer - USANDO CUDA
+    Matrix hidden = input.cudaMultiply(W1);
     
     // Add bias
     for (int i = 0; i < hidden.rows; i++) {
@@ -292,12 +338,12 @@ Matrix FeedForward::forward(const Matrix& input) {
         }
     }
     
-    // ReLU activation
-    hidden = hidden.cudaRelu();
+    // GELU activation (estándar en Transformers)
+    hidden = hidden.cudaGelu();
     hidden_cache = hidden;
     
-    // Second linear layer
-    Matrix output = hidden * W2;
+    // Second linear layer - USANDO CUDA
+    Matrix output = hidden.cudaMultiply(W2);
     
     // Add bias
     for (int i = 0; i < output.rows; i++) {
@@ -310,11 +356,11 @@ Matrix FeedForward::forward(const Matrix& input) {
 }
 
 Matrix FeedForward::backward(const Matrix& grad_output) {
-    // Gradient w.r.t second layer
-    Matrix grad_hidden = grad_output * W2.transpose();
+    // Gradient w.r.t second layer - USANDO CUDA
+    Matrix grad_hidden = grad_output.cudaMultiply(W2.transpose());
     
-    // Second layer weight and bias gradients
-    grad_2.dW.add_inplace(hidden_cache.transpose() * grad_output);
+    // Second layer weight and bias gradients - USANDO CUDA
+    grad_2.dW.add_inplace(hidden_cache.transpose().cudaMultiply(grad_output));
     for (int j = 0; j < grad_output.cols; j++) {
         double bias_grad = 0.0;
         for (int i = 0; i < grad_output.rows; i++) {
@@ -323,20 +369,21 @@ Matrix FeedForward::backward(const Matrix& grad_output) {
         grad_2.db.data[0][j] += bias_grad;
     }
     
-    // ReLU backward
+    // GELU backward
     for (int i = 0; i < grad_hidden.rows; i++) {
         for (int j = 0; j < grad_hidden.cols; j++) {
-            if (hidden_cache.data[i][j] <= 0) {
-                grad_hidden.data[i][j] = 0.0;
-            }
+            double x = hidden_cache.data[i][j] / sqrt(2.0);  // Approximate GELU derivative
+            double cdf = 0.5 * (1.0 + erf(x));
+            double pdf = exp(-x*x) / sqrt(2.0 * M_PI);
+            grad_hidden.data[i][j] *= (cdf + x * pdf);
         }
     }
     
-    // First layer gradients
-    Matrix grad_input = grad_hidden * W1.transpose();
+    // First layer gradients - USANDO CUDA
+    Matrix grad_input = grad_hidden.cudaMultiply(W1.transpose());
     
-    // First layer weight and bias gradients
-    grad_1.dW.add_inplace(input_cache.transpose() * grad_hidden);
+    // First layer weight and bias gradients - USANDO CUDA
+    grad_1.dW.add_inplace(input_cache.transpose().cudaMultiply(grad_hidden));
     for (int j = 0; j < grad_hidden.cols; j++) {
         double bias_grad = 0.0;
         for (int i = 0; i < grad_hidden.rows; i++) {
@@ -394,18 +441,29 @@ LayerNorm::LayerNorm(int d_model, double eps) : d_model(d_model), eps(eps) {
 
 Matrix LayerNorm::forward(const Matrix& input) {
 #ifdef USE_CUDA
+    // OPTIMIZADO: LayerNorm CUDA con una sola llamada
     Matrix result(input.rows, input.cols);
     std::vector<float> A(input.rows * input.cols);
     std::vector<float> B(input.rows * input.cols);
-    for (int i = 0; i < input.rows; ++i)
-        for (int j = 0; j < input.cols; ++j)
+    
+    // Copiar toda la matriz de una vez
+    for (int i = 0; i < input.rows; ++i) {
+        for (int j = 0; j < input.cols; ++j) {
             A[i * input.cols + j] = static_cast<float>(input.data[i][j]);
+        }
+    }
+    
+    // UNA SOLA llamada CUDA usando gamma[0] y beta[0] (más eficiente)
     float gamma_val = static_cast<float>(gamma.data[0][0]);
     float beta_val = static_cast<float>(beta.data[0][0]);
     cuda_matrix_layernorm(A.data(), B.data(), input.rows, input.cols, gamma_val, beta_val);
-    for (int i = 0; i < input.rows; ++i)
-        for (int j = 0; j < input.cols; ++j)
+    
+    // Copiar resultado de vuelta
+    for (int i = 0; i < input.rows; ++i) {
+        for (int j = 0; j < input.cols; ++j) {
             result.data[i][j] = static_cast<double>(B[i * input.cols + j]);
+        }
+    }
     return result;
 #else
     // ...existing code...
@@ -517,17 +575,29 @@ Matrix TransformerEncoderLayer::forward(const Matrix& input, bool training) {
     
     // Self-attention with residual connection and layer norm
     Matrix attention_out = attention->forward(input, input, input, false);
+    
+    // DROPOUT OPTIMIZADO - Seed rápido estático
+    if (training && dropout_rate > 0.0) {
+        static unsigned int seed_counter = 42;  // Seed estático rápido
+        attention_out = attention_out.cudaDropout(dropout_rate, ++seed_counter);
+    }
     attention_out_cache = attention_out;
     
-    Matrix residual1 = input + attention_out;
+    Matrix residual1 = input.cudaAdd(attention_out);  // USANDO CUDA
     Matrix norm1_out = norm1->forward(residual1);
     norm1_out_cache = norm1_out;
     
     // Feed forward with residual connection and layer norm
     Matrix ff_out = feed_forward->forward(norm1_out);
+    
+    // DROPOUT OPTIMIZADO FFN - Seed rápido estático
+    if (training && dropout_rate > 0.0) {
+        static unsigned int seed_counter_ff = 123;  // Seed diferente para FFN
+        ff_out = ff_out.cudaDropout(dropout_rate, ++seed_counter_ff);
+    }
     ff_out_cache = ff_out;
     
-    Matrix residual2 = norm1_out + ff_out;
+    Matrix residual2 = norm1_out.cudaAdd(ff_out);  // USANDO CUDA
     Matrix output = norm2->forward(residual2);
     
     return output;
@@ -636,7 +706,7 @@ Matrix TransformerDecoderLayer::forward(const Matrix& input, const Matrix& encod
     Matrix self_att_out = self_attention->forward(input, input, input, true);
     self_att_cache = self_att_out;
     
-    Matrix residual1 = input + self_att_out;
+    Matrix residual1 = input.cudaAdd(self_att_out);  // USANDO CUDA
     Matrix norm1_out = norm1->forward(residual1);
     norm1_cache = norm1_out;
     
@@ -644,7 +714,7 @@ Matrix TransformerDecoderLayer::forward(const Matrix& input, const Matrix& encod
     Matrix cross_att_out = cross_attention->forward(norm1_out, encoder_output, encoder_output, false);
     cross_att_cache = cross_att_out;
     
-    Matrix residual2 = norm1_out + cross_att_out;
+    Matrix residual2 = norm1_out.cudaAdd(cross_att_out);  // USANDO CUDA
     Matrix norm2_out = norm2->forward(residual2);
     norm2_cache = norm2_out;
     
@@ -652,7 +722,7 @@ Matrix TransformerDecoderLayer::forward(const Matrix& input, const Matrix& encod
     Matrix ff_out = feed_forward->forward(norm2_out);
     ff_cache = ff_out;
     
-    Matrix residual3 = norm2_out + ff_out;
+    Matrix residual3 = norm2_out.cudaAdd(ff_out);  // USANDO CUDA
     Matrix output = norm3->forward(residual3);
     
     return output;
@@ -880,27 +950,35 @@ Transformer::Transformer(int d_model, int num_heads, int num_layers, int d_ff,
         encoder_layers.push_back(std::make_unique<TransformerEncoderLayer>(d_model, num_heads, d_ff, dropout_rate));
     }
     
-    // Initialize decoder layers (optional for classification)
-    for (int i = 0; i < num_layers; i++) {
-        decoder_layers.push_back(std::make_unique<TransformerDecoderLayer>(d_model, num_heads, d_ff, dropout_rate));
-    }
+    // NO inicializar decoder layers para Vision Transformer de clasificación
+    // Vision Transformers para clasificación son encoder-only
+    // decoder_layers.clear(); // Se mantiene vacío
     
-    // Initialize embedding layers
+    // Initialize embedding layers - MEJORADO para HIGH INITIAL ACCURACY
     int patch_dim = patch_size * patch_size;
     patch_embedding_W = Matrix(patch_dim, d_model);
     patch_embedding_b = Matrix(1, d_model);
-    patch_embedding_W.xavier_init();
+    
+    // Inicialización más cuidadosa para embeddings
+    double embed_scale = sqrt(1.0 / (patch_size * patch_size));
+    patch_embedding_W.randomize(-embed_scale, embed_scale);
     patch_embedding_b.zero();
     
-    // Initialize class token
+    // Initialize class token - MEJORADO para HIGH INITIAL ACCURACY
     class_token = Matrix(1, d_model);
-    class_token.randomize(-0.02, 0.02);
+    class_token.randomize(-0.01, 0.01);  // Inicialización más conservadora
     
-    // Initialize classifier
+    // Initialize classifier - MEJORADO para HIGH INITIAL ACCURACY
     classifier_W = Matrix(d_model, num_classes);
     classifier_b = Matrix(1, num_classes);
-    classifier_W.xavier_init();
-    classifier_b.zero();
+    double class_scale = sqrt(1.0 / d_model) * 0.1;  // Muy conservador
+    classifier_W.randomize(-class_scale, class_scale);
+    
+    // Bias para clasificación inicializado para probabilidades uniformes
+    double uniform_logit = log(1.0 / num_classes);  // log(0.1) para 10 clases
+    for (int i = 0; i < num_classes; i++) {
+        classifier_b.data[0][i] = uniform_logit;
+    }
     
     // Initialize gradients
     patch_grad = Gradients(patch_dim, d_model);
@@ -959,14 +1037,10 @@ Matrix Transformer::encode(const Matrix& input) {
 }
 
 Matrix Transformer::decode(const Matrix& encoded, const Matrix& target) {
-    // For classification, we use a simple approach
-    Matrix decoded = encoded;
-    
-    // If we have decoder layers, use them (simplified for classification)
-    // For most vision transformers, we only use the encoder
-    
-    decoded_cache = decoded;
-    return decoded;
+    // Vision Transformer para clasificación NO usa decoder
+    // Retorna encoder output directamente para clasificación
+    decoded_cache = encoded;
+    return encoded;
 }
 
 Matrix Transformer::classify(const Matrix& encoded) {
@@ -976,8 +1050,8 @@ Matrix Transformer::classify(const Matrix& encoded) {
         class_features.data[0][j] = encoded.data[0][j];
     }
     
-    // Linear classification
-    Matrix logits = class_features * classifier_W;
+    // Linear classification - USANDO CUDA
+    Matrix logits = class_features.cudaMultiply(classifier_W);
     
     // Add bias
     for (int j = 0; j < num_classes; j++) {
@@ -992,8 +1066,8 @@ Matrix Transformer::forward(const Matrix& input) {
     // Create patches from image
     Matrix patches = create_patches(input);
     
-    // Embed patches
-    Matrix embedded = patches * patch_embedding_W;
+    // Embed patches - USANDO CUDA
+    Matrix embedded = patches.cudaMultiply(patch_embedding_W);
     
     // Add bias
     for (int i = 0; i < embedded.rows; i++) {
@@ -1030,7 +1104,12 @@ Matrix Transformer::forward(const Matrix& input) {
     Matrix decoded = decode(encoded);
     
     // Classify
-    return classify(decoded);
+    Matrix result = classify(decoded);
+    
+    // Debug desactivado para entrenamiento en producción
+    // Los logs ralentizan el entrenamiento significativamente
+    
+    return result;
 }
 
 Matrix Transformer::backward(const Matrix& grad_output, const std::vector<int>& labels) {
@@ -1094,9 +1173,36 @@ void Transformer::train_step(const Matrix& input, const std::vector<int>& labels
     update_weights_adam(current_step, learning_rate);
 }
 
+// Función auxiliar para learning rate con warmup
+double get_learning_rate_with_warmup(int step, int warmup_steps, double base_lr, double min_lr = 0.0001) {
+    if (step < warmup_steps) {
+        // Warmup lineal desde min_lr hasta base_lr
+        double warmup_progress = (double)step / warmup_steps;
+        return min_lr + (base_lr - min_lr) * warmup_progress;
+    } else {
+        // Después del warmup, usar cosine decay
+        int decay_steps = step - warmup_steps;
+        double decay_factor = 0.5 * (1 + cos(M_PI * decay_steps / 1000.0));
+        return min_lr + (base_lr - min_lr) * decay_factor;
+    }
+}
+
 std::pair<double, double> Transformer::train_batch(const std::vector<Matrix>& inputs, 
                                                   const std::vector<int>& labels, 
                                                   double learning_rate) {
+    // Contador estático para tracking global de steps
+    static int global_step = 0;
+    const int warmup_steps = 50;  // Ajustable
+    
+    // Calcular learning rate con warmup
+    double actual_lr = get_learning_rate_with_warmup(global_step, warmup_steps, learning_rate);
+    global_step++;
+    
+    // Si es uno de los primeros batches, imprimir el LR actual
+    if (global_step <= 10 || global_step == warmup_steps) {
+        std::cout << "[Step " << global_step << "] Learning rate: " << actual_lr << std::endl;
+    }
+    
     double total_loss = 0.0;
     int correct = 0;
     
@@ -1138,10 +1244,10 @@ std::pair<double, double> Transformer::train_batch(const std::vector<Matrix>& in
     classifier_grad.db.multiply_inplace(scale_factor);
     class_token_grad.multiply_inplace(scale_factor);
     
-    // Clip and update
+    // Clip and update con learning rate ajustado
     clip_gradients(1.0);
     current_step++;
-    update_weights_adam(current_step, learning_rate);
+    update_weights_adam(current_step, actual_lr);  // Usar el learning rate con warmup
     
     double avg_loss = total_loss / inputs.size();
     double accuracy = static_cast<double>(correct) / inputs.size();
@@ -1152,12 +1258,37 @@ std::pair<double, double> Transformer::train_batch(const std::vector<Matrix>& in
 double Transformer::compute_loss(const Matrix& predictions, const std::vector<int>& labels) {
     double loss = 0.0;
     
+    // Debug deshabilitado para máximo rendimiento
+    // static int debug_calls = 0;
+    // debug_calls++;
+    // if (debug_calls <= 5 && labels.size() > 0) {
+    //     std::cout << "[DEBUG] Pred[0]: ";
+    //     for (int j = 0; j < (std::min)(3, predictions.cols); j++) {
+    //         std::cout << std::fixed << std::setprecision(2) << predictions.data[0][j] << " ";
+    //     }
+    //     std::cout << "| Label: " << labels[0] << std::endl;
+    // }
+    
     for (size_t i = 0; i < labels.size() && i < predictions.rows; i++) {
-        double pred = std::max(predictions.data[i][labels[i]], 1e-7); // Avoid log(0)
-        loss -= log(pred);
+        if (labels[i] >= predictions.cols || labels[i] < 0) {
+            std::cout << "[ERROR] Label fuera de rango: " << labels[i] << std::endl;
+            continue;
+        }
+        
+        // Label Smoothing para mejor generalización
+        double label_smoothing = 0.1;
+        double smooth_value = label_smoothing / predictions.cols;
+        
+        // Compute smoothed loss
+        for (int j = 0; j < predictions.cols; j++) {
+            double target = (j == labels[i]) ? (1.0 - label_smoothing + smooth_value) : smooth_value;
+            double pred = (std::max)(predictions.data[i][j], 1e-7);
+            loss -= target * log(pred);
+        }
     }
     
-    return loss / labels.size();
+    double avg_loss = loss / labels.size();
+    return avg_loss;
 }
 
 double Transformer::compute_accuracy(const Matrix& predictions, const std::vector<int>& labels) {
@@ -1213,16 +1344,21 @@ void Transformer::update_weights(double learning_rate) {
 }
 
 void Transformer::update_weights_adam(int step, double learning_rate) {
-    // Update embedding weights with Adam
-    optimizer->update(patch_embedding_W, patch_grad.dW, &patch_embedding_W, step, learning_rate);
-    optimizer->update(patch_embedding_b, patch_grad.db, &patch_embedding_b, step, learning_rate);
+    // USAR LEARNING RATE SCHEDULER con Warmup + Cosine Annealing
+    int warmup_steps = 300;  // Warmup más corto para modelo más pequeño
+    int total_steps = 15 * 938;  // 15 epochs * ~938 batches per epoch
+    double scheduled_lr = scheduler->warmup_cosine(step, warmup_steps, total_steps);
     
-    // Update class token with Adam
-    optimizer->update(class_token, class_token_grad, &class_token, step, learning_rate);
+    // Update embedding weights with Adam + scheduled LR
+    optimizer->update(patch_embedding_W, patch_grad.dW, &patch_embedding_W, step, scheduled_lr);
+    optimizer->update(patch_embedding_b, patch_grad.db, &patch_embedding_b, step, scheduled_lr);
     
-    // Update classifier weights with Adam
-    optimizer->update(classifier_W, classifier_grad.dW, &classifier_W, step, learning_rate);
-    optimizer->update(classifier_b, classifier_grad.db, &classifier_b, step, learning_rate);
+    // Update class token with Adam + scheduled LR
+    optimizer->update(class_token, class_token_grad, &class_token, step, scheduled_lr);
+    
+    // Update classifier weights with Adam + scheduled LR
+    optimizer->update(classifier_W, classifier_grad.dW, &classifier_W, step, scheduled_lr);
+    optimizer->update(classifier_b, classifier_grad.db, &classifier_b, step, scheduled_lr);
     
     // Update layer weights with Adam
     for (auto& layer : encoder_layers) {

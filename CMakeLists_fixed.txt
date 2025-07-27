@@ -1,0 +1,193 @@
+cmake_minimum_required(VERSION 3.18)
+project(FashionMNISTTransformerFixed LANGUAGES CXX CUDA)
+
+# ==============================
+# ✅ CONFIGURACIÓN PARA IMPLEMENTACIÓN CORREGIDA
+# ==============================
+option(USE_CUDA "Enable CUDA support" ON)
+
+# ==============================
+# 🔧 CONFIGURACIÓN GLOBAL
+# ==============================
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# ==============================
+# 🔍 FLAGS DE COMPILACIÓN OPTIMIZADOS
+# ==============================
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /W3 /arch:AVX2")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /DNDEBUG")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Wall -Wextra -march=native")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG")
+endif()
+
+# ==============================
+# 🔍 INCLUDES
+# ==============================
+include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# ==============================
+# 📁 ARCHIVOS FUENTE CORREGIDOS
+# ==============================
+set(SOURCES
+    main_fixed.cpp
+    src/matrix.cpp
+    src/mnist_loader.cpp
+    src/transformer_fixed.cpp
+)
+
+# ==============================
+# 🚀 CONFIGURACIÓN CUDA OPTIMIZADA
+# ==============================
+if(USE_CUDA)
+    enable_language(CUDA)
+    
+    # Detectar automáticamente la arquitectura CUDA disponible
+    include(FindCUDA/select_compute_arch)
+    CUDA_DETECT_INSTALLED_GPUS(INSTALLED_GPU_CCS_1)
+    string(STRIP "${INSTALLED_GPU_CCS_1}" INSTALLED_GPU_CCS_2)
+    string(REPLACE " " ";" INSTALLED_GPU_CCS_3 "${INSTALLED_GPU_CCS_2}")
+    string(REPLACE "." "" CUDA_ARCH_LIST "${INSTALLED_GPU_CCS_3}")
+    SET(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH_LIST})
+    
+    # Si no se detecta, usar arquitecturas comunes
+    if(NOT CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES "61;70;75;80;86;89")
+    endif()
+    
+    # Configuraciones específicas para CUDA
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -fPIC")
+    
+    if(WIN32)
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler /W3")
+    else()
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler -Wall")
+    endif()
+    
+    # Agregar archivos CUDA
+    list(APPEND SOURCES src/matrix_cuda.cu)
+    
+    # Buscar bibliotecas CUDA
+    find_package(CUDAToolkit REQUIRED)
+    
+    add_definitions(-DUSE_CUDA)
+    
+    message(STATUS "✅ CUDA habilitado")
+    message(STATUS "📡 CUDA Toolkit version: ${CUDAToolkit_VERSION}")
+    message(STATUS "🏗️ CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+else()
+    message(STATUS "❌ CUDA deshabilitado")
+endif()
+
+# ==============================
+# 🔨 EJECUTABLE PRINCIPAL
+# ==============================
+add_executable(${PROJECT_NAME} ${SOURCES})
+
+# ==============================
+# 🔗 CONFIGURACIÓN DE LINKING
+# ==============================
+if(USE_CUDA)
+    # Configurar propiedades CUDA
+    set_property(TARGET ${PROJECT_NAME} PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+    set_property(TARGET ${PROJECT_NAME} PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+    
+    # Link bibliotecas CUDA
+    target_link_libraries(${PROJECT_NAME} 
+        CUDA::cudart 
+        CUDA::cublas
+        CUDA::curand
+    )
+    
+    # Para sistemas específicos
+    if(WIN32)
+        target_link_libraries(${PROJECT_NAME} 
+            ${CUDAToolkit_LIBRARY_DIR}/cudart.lib
+            ${CUDAToolkit_LIBRARY_DIR}/cublas.lib
+        )
+    else()
+        target_link_libraries(${PROJECT_NAME}
+            ${CUDAToolkit_LIBRARY_DIR}/libcudart.so
+            ${CUDAToolkit_LIBRARY_DIR}/libcublas.so
+        )
+    endif()
+endif()
+
+# ==============================
+# ✅ OPENMP (PARA CPU PARALLELISM)
+# ==============================
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
+    message(STATUS "✅ OpenMP encontrado y activado")
+else()
+    message(STATUS "⚠️ OpenMP no encontrado")
+endif()
+
+# ==============================
+# 🎯 CONFIGURACIONES ADICIONALES
+# ==============================
+
+# Para debugging
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE DEBUG_MODE=1)
+    if(USE_CUDA)
+        set(CMAKE_CUDA_FLAGS_DEBUG "${CMAKE_CUDA_FLAGS_DEBUG} -G -g")
+    endif()
+endif()
+
+# Para profiling
+option(ENABLE_PROFILING "Enable CUDA profiling support" OFF)
+if(ENABLE_PROFILING AND USE_CUDA)
+    target_link_libraries(${PROJECT_NAME} CUDA::nvToolsExt)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE ENABLE_PROFILING=1)
+endif()
+
+# ==============================
+# 📊 INFORMACIÓN DEL BUILD
+# ==============================
+message(STATUS "")
+message(STATUS "🔧 === BUILD CONFIGURATION ===")
+message(STATUS "📦 Project: ${PROJECT_NAME}")
+message(STATUS "🛠️ Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "💡 C++ standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "🔧 Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+if(USE_CUDA)
+    message(STATUS "⚡ CUDA: ${CUDAToolkit_VERSION}")
+    message(STATUS "📡 CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+endif()
+message(STATUS "🚀 Optimization: ${CMAKE_CXX_FLAGS}")
+message(STATUS "")
+
+# ==============================
+# 🧪 TARGETS ADICIONALES
+# ==============================
+
+# Test de matrices CUDA
+if(USE_CUDA)
+    add_executable(test_cuda_matrix test_cuda.cpp src/matrix_cuda.cu src/matrix.cpp)
+    target_link_libraries(test_cuda_matrix CUDA::cudart CUDA::cublas)
+    set_property(TARGET test_cuda_matrix PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+endif()
+
+# Test simple
+add_executable(test_simple test_simple.cpp src/matrix.cpp src/mnist_loader.cpp)
+
+# ==============================
+# 📋 INSTALL TARGETS
+# ==============================
+install(TARGETS ${PROJECT_NAME} DESTINATION bin)
+if(USE_CUDA)
+    install(TARGETS test_cuda_matrix DESTINATION bin)
+endif()
+install(TARGETS test_simple DESTINATION bin)

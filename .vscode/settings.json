@@ -2,6 +2,7 @@
     "files.associations": {
         "cmath": "cpp",
         "memory": "cpp",
-        "ostream": "cpp"
+        "ostream": "cpp",
+        "utility": "cpp"
     }
 }

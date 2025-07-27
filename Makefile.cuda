@@ -1,0 +1,82 @@
+# Makefile para compilar el proyecto Transformer con CUDA en Windows
+# Usar: make cuda_test para probar CUDA, make transformer para el proyecto completo
+
+# Configuración del compilador
+CXX = g++
+NVCC = nvcc
+TARGET_ARCH = sm_60,sm_61,sm_70,sm_75,sm_80,sm_86
+
+# Directorios
+SRCDIR = src
+INCDIR = include
+OBJDIR = obj
+
+# Flags de compilación
+CXXFLAGS = -std=c++17 -O3 -Wall -DUSE_CUDA
+NVCCFLAGS = -std=c++17 -O3 -DUSE_CUDA --use_fast_math -arch=$(TARGET_ARCH)
+INCLUDES = -I$(INCDIR)
+LIBS = -lcudart
+
+# Archivos fuente
+CXX_SOURCES = $(SRCDIR)/matrix.cpp $(SRCDIR)/mnist_loader.cpp $(SRCDIR)/transformer.cpp
+CUDA_SOURCES = $(SRCDIR)/matrix_cuda.cu
+TEST_CUDA_SOURCE = test_cuda.cpp
+
+# Archivos objeto
+CXX_OBJECTS = $(CXX_SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
+CUDA_OBJECTS = $(CUDA_SOURCES:$(SRCDIR)/%.cu=$(OBJDIR)/%.o)
+
+# Crear directorio de objetos
+$(shell if not exist "$(OBJDIR)" mkdir "$(OBJDIR)")
+
+# Regla principal
+all: transformer
+
+# Compilar proyecto completo
+transformer: $(CXX_OBJECTS) $(CUDA_OBJECTS) main.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o FashionMNISTTransformer_CUDA.exe main.cpp $(CXX_OBJECTS) $(CUDA_OBJECTS) $(LIBS)
+	@echo "✅ Proyecto compilado exitosamente: FashionMNISTTransformer_CUDA.exe"
+
+# Prueba específica de CUDA
+cuda_test: $(CUDA_OBJECTS) test_cuda.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o test_cuda.exe test_cuda.cpp $(CUDA_OBJECTS) $(LIBS)
+	@echo "✅ Prueba CUDA compilada: test_cuda.exe"
+
+# Compilar archivos C++
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+# Compilar archivos CUDA
+$(OBJDIR)/%.o: $(SRCDIR)/%.cu
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
+
+# Compilar solo las operaciones CUDA
+cuda_ops: $(CUDA_OBJECTS)
+	@echo "✅ Operaciones CUDA compiladas"
+
+# Limpiar archivos compilados
+clean:
+	@if exist "$(OBJDIR)" rmdir /s /q "$(OBJDIR)"
+	@if exist "*.exe" del /q "*.exe"
+	@if exist "*.o" del /q "*.o"
+	@echo "🧹 Archivos de compilación limpiados"
+
+# Verificar instalación CUDA
+check_cuda:
+	@echo "=== Verificando instalación CUDA ==="
+	@nvcc --version
+	@echo "=== Verificando dispositivos CUDA ==="
+	@nvidia-smi || echo "nvidia-smi no disponible"
+
+# Ayuda
+help:
+	@echo "Comandos disponibles:"
+	@echo "  make all         - Compilar proyecto completo"
+	@echo "  make transformer - Compilar proyecto completo"
+	@echo "  make cuda_test   - Compilar solo prueba CUDA"
+	@echo "  make cuda_ops    - Compilar solo operaciones CUDA"
+	@echo "  make clean       - Limpiar archivos compilados"
+	@echo "  make check_cuda  - Verificar instalación CUDA"
+	@echo "  make help        - Mostrar esta ayuda"
+
+.PHONY: all transformer cuda_test cuda_ops clean check_cuda help

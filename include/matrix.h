@@ -22,6 +22,8 @@ public:
     Matrix cudaTranspose() const;
     Matrix cudaSoftmax() const;
     Matrix cudaRelu() const;
+    Matrix cudaGelu() const;
+    Matrix cudaDropout(double dropout_rate, unsigned int seed) const;  // DECLARACIÓN FALTANTE AÑADIDA
     Matrix cudaSigmoid() const;
     Matrix cudaTanh() const;
     double cudaReduceSum() const;
